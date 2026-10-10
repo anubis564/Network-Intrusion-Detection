@@ -1,0 +1,37 @@
+Introduction
+    1. The objective of the project
+    2. Frame the problem (supervised, unsupervised)
+    3. Performance measures
+Imports and Configuration
+Loading the dataset and merging dataframes
+1. Initial Data Exploration
+    1.1 Data overview
+        1.1.1 data dimensions
+        1.1.2 first few rows
+        1.1.3 data types and info
+        1.1.4 explaining every feature
+    1.2 duplicates
+    1.3 missing values and its percentage
+    1.4 infinities
+    1.5 outliers
+    1.6 Identifying impossible negatives
+    1.7 visualize the data (univariate analysis)
+    1.8 studying correlations between features and Identifying useless featues and multicollinearity
+    1.9 Documenting what we've learned
+2. Preparing the data
+    2.1 feature selection
+    2.2 Data Cleaning
+        2.2 handling duplicates
+        2.3 handling missing values
+        2.4 handling infinities
+        2.5 handling impossible negatives
+        2.6 handling outliers
+        2.7 handling attempted rows
+    2.3 feature engineering
+    2.4 feature scaling
+3. EDA (Bivariate analysis)
+4. short-list promising models
+5. fine tuning
+
+
+
