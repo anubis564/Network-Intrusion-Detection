@@ -2,10 +2,16 @@
 
 Run locally:  streamlit run app/app.py
 """
+import faulthandler
 import sys
 from pathlib import Path
 
 import streamlit as st
+
+# If a native library (polars, XGBoost, scikit-learn) ever crashes the process, print the Python stack of every
+# thread to the server log instead of dying silently with "Connection error" in the browser.
+if not faulthandler.is_enabled():
+    faulthandler.enable(all_threads=True)
 
 APP_DIR = Path(__file__).resolve().parent
 for p in (APP_DIR, APP_DIR.parent):
