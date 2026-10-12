@@ -74,7 +74,10 @@ with chat_col:
                 unsafe_allow_html=True)
         for m in history:
             with st.chat_message(m["role"], avatar=":material/person:" if m["role"] == "user" else ":material/shield:"):
-                st.markdown(m["content"])
+                if ai.is_arabic(m["content"][:300]):  # Arabic replies read right-to-left, lists included
+                    st.markdown(f'<div dir="rtl">\n\n{m["content"]}\n\n</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(m["content"])
                 if m.get("notice"):
                     st.warning(m["notice"], icon=":material/cloud_off:")
                 if m.get("sources") and show_sources:

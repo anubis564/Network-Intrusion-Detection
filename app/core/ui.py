@@ -44,6 +44,9 @@ table.alerts td {{ padding: 9px 6px; border-bottom: 1px solid #172036; }}
 .brand .shield {{ width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
     background: linear-gradient(135deg, #6366f1, #3b82f6); }}
 .dot {{ height: 9px; width: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }}
+/* chat replies: each paragraph takes its direction from its own text, so Arabic answers read right-to-left */
+[data-testid="stChatMessage"] :is(p, li, h1, h2, h3, h4, blockquote) {{ unicode-bidi: plaintext; text-align: start; }}
+[data-testid="stChatMessage"] :is(ul, ol):has(> li:first-child > :is(p, span)) {{ unicode-bidi: plaintext; }}
 </style>
 """
 
