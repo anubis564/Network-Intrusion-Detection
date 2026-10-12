@@ -1,1 +1,11 @@
-data/
+# raw and processed dataset files (download them, see README)
+/data/
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+# editor
+.vscode/
+# secrets (API keys)
+.streamlit/secrets.toml
