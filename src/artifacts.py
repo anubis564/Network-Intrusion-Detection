@@ -34,6 +34,18 @@ def _versions() -> dict:
     return versions
 
 
+def _to_cpu(model):
+    """Make an XGBoost model predict on the CPU, whatever device it was trained on.
+
+    Prediction machines (the Streamlit app, Streamlit Cloud) have no GPU; a model left on "cuda"
+    warns about mismatched devices and falls back to a slower path on every prediction.
+    """
+    final = model[-1] if hasattr(model, "steps") else model
+    if type(final).__name__.startswith("XGB") and "device" in final.get_params():
+        final.set_params(device="cpu")
+    return model
+
+
 def save_artifacts(binary_model, specialist_model, input_columns, specialist_classes=None,
                    metrics=None, out_dir="../models", notes="") -> Path:
     """Save both models plus metadata.
@@ -59,8 +71,8 @@ def save_artifacts(binary_model, specialist_model, input_columns, specialist_cla
     if "BENIGN" in specialist_classes:
         raise ValueError("specialist_model must be trained on attack flows only (no BENIGN class)")
 
-    joblib.dump(binary_model, out / BINARY_FILE, compress=3)
-    joblib.dump(specialist_model, out / SPECIALIST_FILE, compress=3)
+    joblib.dump(_to_cpu(binary_model), out / BINARY_FILE, compress=3)
+    joblib.dump(_to_cpu(specialist_model), out / SPECIALIST_FILE, compress=3)
 
     metadata = {
         "input_columns": list(input_columns),
@@ -88,14 +100,14 @@ def load_artifacts(models_dir) -> dict:
     if not binary_path.exists():
         raise ValueError(f"{binary_path.name} not found in {models_dir}")
 
-    binary = joblib.load(binary_path)
+    binary = _to_cpu(joblib.load(binary_path))
     classes = [int(c) for c in getattr(binary, "classes_", [0, 1])]
     if sorted(classes) != [0, 1]:
         raise ValueError(f"{binary_path.name} is not a binary model: it predicts {len(classes)} classes")
 
     specialist, specialist_classes = None, []
     if specialist_path.exists():
-        specialist = joblib.load(specialist_path)
+        specialist = _to_cpu(joblib.load(specialist_path))
         specialist_classes = metadata.get("specialist", {}).get("classes") or \
             [str(c) for c in getattr(specialist, "classes_", [])]
 
