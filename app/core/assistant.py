@@ -85,6 +85,15 @@ def _config(system, max_tokens: int, temperature: float, thinking: bool):
     )
 
 
+def _reasons(tried) -> list[str]:
+    out = []
+    for model, err in tried:
+        code = getattr(err, "code", None)
+        status = getattr(err, "status", None)
+        out.append(f"{model}: {code} {status}" if code else f"{model}: {err}")
+    return out
+
+
 def _retryable(exc) -> tuple[bool, bool]:
     """(try the next model?, retry this model without the thinking setting?)"""
     code = getattr(exc, "code", None)
@@ -95,7 +104,7 @@ def stream_gemini(history: list[dict], prompt: str):
     """Yield answer text chunks, moving to the next model when one is retired, overloaded or returns nothing."""
     from google.genai import errors
 
-    last_error = None
+    last_error, tried = None, []
     for model in candidate_models():
         for thinking in (True, False):
             got_text = False
@@ -111,25 +120,27 @@ def stream_gemini(history: list[dict], prompt: str):
                 if got_text:
                     return
                 last_error = RuntimeError(f"{model} returned an empty answer")
+                tried.append((model, "empty answer"))
                 break
             except errors.APIError as exc:
                 if got_text:
                     raise
                 next_model, without_thinking = _retryable(exc)
                 last_error = exc
+                tried.append((model, exc))
                 if without_thinking and thinking:
                     continue
                 if next_model:
                     break
                 raise
-    raise last_error or RuntimeError("No Gemini model is available")
+    raise RuntimeError("no Gemini model answered: " + "; ".join(_reasons(tried)))
 
 
 def generate_gemini(prompt: str, max_tokens: int = 1024) -> str:
     """One short non-streamed answer, with the same model fallback."""
     from google.genai import errors
 
-    last_error = None
+    last_error, tried = None, []
     for model in candidate_models():
         for thinking in (True, False):
             try:
@@ -142,12 +153,13 @@ def generate_gemini(prompt: str, max_tokens: int = 1024) -> str:
             except errors.APIError as exc:
                 next_model, without_thinking = _retryable(exc)
                 last_error = exc
+                tried.append((model, exc))
                 if without_thinking and thinking:
                     continue
                 if next_model:
                     break
                 raise
-    raise last_error or RuntimeError("No Gemini model is available")
+    raise RuntimeError("no Gemini model answered: " + "; ".join(_reasons(tried)))
 
 
 def _contents(history: list[dict], final_user_text: str) -> list[dict]:

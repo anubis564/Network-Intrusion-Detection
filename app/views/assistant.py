@@ -3,6 +3,7 @@ import streamlit as st
 from core import assistant as ai
 from core import knowledge as kb
 from core import rag, state, ui
+from core.config import SECRETS_FILE
 
 engine, res = state.results()
 ui.page_header("AI Assistant", "Ask why an alert was raised, what an attack is, how to respond, or anything about the dataset")
@@ -42,11 +43,19 @@ with side:
         if ai.llm_available():
             st.markdown(f":green[:material/check_circle:] Gemini connected (`{ai.gemini_model()}`)")
         else:
-            st.markdown(":blue[:material/info:] **Offline mode**: answers come straight from the knowledge base. "
-                        "Add `GEMINI_API_KEY` to the Streamlit secrets for conversational answers.")
+            st.markdown(":orange[:material/key_off:] **No Gemini API key found**, so answers come straight from the "
+                        "knowledge base. Add this line to `.streamlit/secrets.toml` in the project folder "
+                        f"(`{SECRETS_FILE}`) and restart the app:")
+            st.code('GEMINI_API_KEY = "your-key"', language="toml")
         with st.popover("Settings", icon=":material/tune:", width="stretch"):
             top_k = st.slider("TOP_K passages", 1, 8, 4)
             show_sources = st.toggle("Show retrieved sources", value=True)
+            if st.button("Test Gemini connection", icon=":material/network_check:", disabled=not ai.llm_available()):
+                try:
+                    reply = ai.generate_gemini("Reply with the single word OK.")
+                    st.success(f"Gemini answered with {ai.gemini_model()}: {reply.strip()[:40]}")
+                except Exception as exc:
+                    st.error(f"Gemini failed: {exc}")
         if st.button("Clear conversation", icon=":material/delete_sweep:", width="stretch"):
             st.session_state["chat"] = []
             st.rerun()
@@ -66,6 +75,8 @@ with chat_col:
         for m in history:
             with st.chat_message(m["role"], avatar=":material/person:" if m["role"] == "user" else ":material/shield:"):
                 st.markdown(m["content"])
+                if m.get("notice"):
+                    st.warning(m["notice"], icon=":material/cloud_off:")
                 if m.get("sources") and show_sources:
                     with st.expander(f"Sources ({len(m['sources'])})"):
                         for i, s in enumerate(m["sources"], 1):
@@ -82,15 +93,17 @@ if prompt:
         hits = rag.retrieve(ai.search_query(prompt, alert), top_k=top_k)
         sources = [{"source": c.source, "title": c.title, "text": c.text, "score": s} for c, s in hits]
         with st.chat_message("assistant", avatar=":material/shield:"):
-            answer = None
+            answer, notice = None, None
             if ai.llm_available():
                 try:
                     answer = st.write_stream(ai.stream_gemini(history[-8:], ai.build_prompt(prompt, alert, hits)))
                 except Exception as exc:
-                    st.error(f"Gemini request failed ({type(exc).__name__}: {exc}). Falling back to offline mode.")
+                    notice = f"Gemini did not answer, so this reply comes from the knowledge base only. Reason: {exc}"
+            else:
+                notice = f"No GEMINI_API_KEY found (looked in Streamlit secrets and {SECRETS_FILE})."
             if not answer:
                 answer = ai.offline_answer(prompt, alert, hits)
                 st.markdown(answer)
     history.append({"role": "user", "content": prompt})
-    history.append({"role": "assistant", "content": answer, "sources": sources})
+    history.append({"role": "assistant", "content": answer, "sources": sources, "notice": notice})
     st.rerun()
