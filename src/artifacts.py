@@ -3,7 +3,7 @@
 Call ``save_artifacts`` at the end of the notebook (section 7) instead of dumping the
 models one by one. It writes:
 
-    models/binary_model.pkl       pipeline that predicts 0 = benign, 1 = attack
+    models/xgb_binary_model.pkl   pipeline that predicts 0 = benign, 1 = attack
     models/specialist_model.pkl   pipeline trained on attack flows only (attack type)
     models/model_metadata.json    input columns, class names, metrics and library versions
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import joblib
 
-BINARY_FILE = "binary_model.pkl"
+BINARY_FILE = "xgb_binary_model.pkl"
 SPECIALIST_FILE = "specialist_model.pkl"
 METADATA_FILE = "model_metadata.json"
 

@@ -27,7 +27,7 @@ app/
 src/
   preprocessing.py       cleaning + feature-selection classes and make_model()  (used by notebook AND app)
   artifacts.py           save_artifacts() / load_artifacts(): the model format the app expects
-models/                  binary_model.pkl, specialist_model.pkl, model_metadata.json
+models/                  xgb_binary_model.pkl, specialist_model.pkl, model_metadata.json
 notebooks/cicids2017.ipynb  analysis, EDA and model training
 scripts/build_demo_data.py  rebuilds app/data/demo_flows.parquet from the raw CSVs
 ```
@@ -54,7 +54,7 @@ https://intrusion-detection.distrinet-research.be/WTMC2021/tools_datasets.html a
 
 The app needs **two pipelines** and a metadata file in `models/`:
 
-* `binary_model.pkl`: predicts **0 = benign, 1 = attack**
+* `xgb_binary_model.pkl`: predicts **0 = benign, 1 = attack**
 * `specialist_model.pkl`: trained on **attack flows only**, predicts the attack type
 * `model_metadata.json`: input columns, class names, metrics, library versions
 
