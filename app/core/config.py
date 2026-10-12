@@ -4,10 +4,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = ROOT / "app"
 MODELS_DIR = Path(os.environ.get("NIDS_MODELS_DIR", ROOT / "models"))
-DEMO_DATA = APP_DIR / "data" / "demo_flows.parquet"
+TRAFFIC_DATA = APP_DIR / "data" / "test_flows.parquet"  # held-out test flows, see scripts/build_test_replay.py
 KNOWLEDGE_DIR = APP_DIR / "knowledge"
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
 COLORS = {
     "bg": "#0b1120", "card": "#111a2e", "border": "#1e2a44", "text": "#e2e8f0", "muted": "#8b9bb4",

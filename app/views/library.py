@@ -27,7 +27,7 @@ for i, label in enumerate(labels):
             f'<div style="margin:4px 0 6px"><span class="chip" style="border-color:{color};color:{color}">{a["family"]}</span>'
             f'{ui.chips([f"{t} {n}" for t, n in a["mitre"]])}</div>'
             f'<div style="color:#cbd5e1">{html.escape(a["summary"])}</div>'
-            f'<div style="color:#8b9bb4;font-size:.8rem;margin-top:6px">{counts.get(label, 0):,} flows in the demo data</div>',
+            f'<div style="color:#8b9bb4;font-size:.8rem;margin-top:6px">{counts.get(label, 0):,} flows in the test traffic</div>',
             unsafe_allow_html=True)
         with st.expander("Details and response playbook"):
             st.markdown(f"**How it works.** {a['how']}")

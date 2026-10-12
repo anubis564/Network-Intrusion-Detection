@@ -1,4 +1,4 @@
-"""Shared page state: scored demo traffic and the currently selected alert."""
+"""Shared page state: scored test traffic and the currently selected alert."""
 import pandas as pd
 import polars as pl
 import streamlit as st
@@ -8,7 +8,7 @@ from core import engine as eng
 
 def results():
     engine = eng.load_engine()
-    res = eng.score_demo(engine, eng.engine_key(engine))
+    res = eng.score_traffic(engine, eng.engine_key(engine))
     return engine, res
 
 
@@ -35,7 +35,7 @@ def selected_alert_idx(res: pd.DataFrame) -> int:
 
 
 def raw_row(idx: int) -> pl.DataFrame:
-    return eng.load_demo().slice(idx, 1)
+    return eng.load_traffic().slice(idx, 1)
 
 
 def alert_record(engine, res: pd.DataFrame, idx: int) -> dict:

@@ -4,28 +4,30 @@ import re
 
 from core import knowledge as kb
 from core import rag
-from core.config import DEFAULT_GEMINI_MODEL, secret
+from core.config import secret
 
-SYSTEM_PROMPT = """You are the security analyst assistant inside a Network Intrusion Detection System (NIDS) built on the improved CICIDS2017 dataset.
-You help SOC analysts and students understand alerts raised by the machine-learning models, the attacks behind them, and how to respond.
+SYSTEM_PROMPT = """You are the AI assistant inside a Network Intrusion Detection System (NIDS) built on the improved CICIDS2017 dataset.
+Your main users are SOC analysts and students: you explain alerts raised by the machine-learning models, the attacks behind them, and how to respond. You can also answer any other question the user asks, on any topic, like a helpful general assistant.
 
 How to answer:
-- Ground every factual statement in the ALERT CONTEXT or the SOURCES given in the latest message. Cite sources inline as [S1], [S2] using their numbers. Never invent a source number.
-- If neither the alert context nor the sources contain the answer, say clearly that it is not in the available sources, then give general guidance labelled as such.
+- Language: always reply in the language of the user's latest message. Arabic in, Arabic out (match the user's dialect when it is Egyptian Arabic); English in, English out. Keep technical terms such as feature names, attack names and commands in English.
+- When the ALERT CONTEXT or the SOURCES in the latest message are relevant, use them and cite sources inline as [S1], [S2] by their numbers. Never invent a source number.
+- When the question is not covered by the sources (general knowledge, other topics, small talk), simply answer it from your own knowledge. Do not apologise and do not mention the sources in that case.
 - When explaining a prediction, refer to the concrete feature values and their contributions from the alert context, and explain in plain words why they point to an attack or to normal traffic. Mention uncertainty when the confidence is low.
-- When asked how to respond, give practical, defensive, step-by-step actions (containment, investigation, recovery, prevention). Note that "Blocked"/"Logged" in the app are simulated actions.
-- Stay defensive: do not give instructions for carrying out attacks.
-- Reply in the same language as the user's question (Arabic questions get Arabic answers; keep technical terms such as feature names and attack names in English).
-- Be concise and well structured: short paragraphs or bullet points, headings only for longer answers."""
+- When asked how to respond to an attack, give practical, defensive, step-by-step actions (containment, investigation, recovery, prevention). Note that "Blocked"/"Logged" in the app are simulated actions.
+- Stay defensive: do not give step-by-step instructions for carrying out attacks against systems.
+- Be clear and well structured: short paragraphs or bullet points, headings only for longer answers."""
+
+# Tried in order when GEMINI_MODEL is not set or fails. The models a key can use change over time
+# (older ones are retired, popular ones return 503 under load), so the app never depends on a single name.
+FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+_RETRY_CODES = {404, 408, 429, 500, 502, 503, 504}
+_active = {"model": None}
 
 
 # ------------------------------------------------------------------------------------- Gemini
 def gemini_key() -> str | None:
     return secret("GEMINI_API_KEY") or secret("GOOGLE_API_KEY")
-
-
-def gemini_model() -> str:
-    return secret("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
 
 
 def llm_available() -> bool:
@@ -43,6 +45,111 @@ def _client_for(api_key: str):
     return genai.Client(api_key=api_key)
 
 
+@functools.lru_cache(maxsize=2)
+def _candidates_for(api_key: str, configured: str) -> tuple:
+    """Configured model first, then the newest 'gemini-X.Y-flash' models this key can use, then fixed fallbacks."""
+    names = [configured] if configured else []
+    try:
+        found = []
+        for m in _client_for(api_key).models.list():
+            name = m.name.removeprefix("models/")
+            match = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash", name)
+            if match and "generateContent" in (m.supported_actions or []):
+                found.append((float(match.group(1)), name))
+        names += [n for _, n in sorted(found, reverse=True)[:4]]
+    except Exception:
+        pass
+    return tuple(dict.fromkeys(names + FALLBACK_MODELS))
+
+
+def candidate_models() -> list[str]:
+    models = list(_candidates_for(gemini_key(), secret("GEMINI_MODEL") or ""))
+    if _active["model"] in models:  # the model that answered last time goes first
+        models.remove(_active["model"])
+        models.insert(0, _active["model"])
+    return models
+
+
+def gemini_model() -> str:
+    return _active["model"] or candidate_models()[0]
+
+
+def _config(system, max_tokens: int, temperature: float, thinking: bool):
+    from google.genai import types
+
+    # low thinking: newer Gemini models think before answering, and without a cap the thinking can use
+    # the whole output budget and leave an empty answer
+    return types.GenerateContentConfig(
+        system_instruction=system, temperature=temperature, max_output_tokens=max_tokens,
+        thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW) if thinking else None,
+    )
+
+
+def _retryable(exc) -> tuple[bool, bool]:
+    """(try the next model?, retry this model without the thinking setting?)"""
+    code = getattr(exc, "code", None)
+    return code in _RETRY_CODES, code == 400 and "think" in str(exc).lower()
+
+
+def stream_gemini(history: list[dict], prompt: str):
+    """Yield answer text chunks, moving to the next model when one is retired, overloaded or returns nothing."""
+    from google.genai import errors
+
+    last_error = None
+    for model in candidate_models():
+        for thinking in (True, False):
+            got_text = False
+            try:
+                stream = _client().models.generate_content_stream(
+                    model=model, contents=_contents(history, prompt),
+                    config=_config(SYSTEM_PROMPT, 8192, 0.4, thinking))
+                for chunk in stream:
+                    if chunk.text:
+                        got_text = True
+                        _active["model"] = model
+                        yield chunk.text
+                if got_text:
+                    return
+                last_error = RuntimeError(f"{model} returned an empty answer")
+                break
+            except errors.APIError as exc:
+                if got_text:
+                    raise
+                next_model, without_thinking = _retryable(exc)
+                last_error = exc
+                if without_thinking and thinking:
+                    continue
+                if next_model:
+                    break
+                raise
+    raise last_error or RuntimeError("No Gemini model is available")
+
+
+def generate_gemini(prompt: str, max_tokens: int = 1024) -> str:
+    """One short non-streamed answer, with the same model fallback."""
+    from google.genai import errors
+
+    last_error = None
+    for model in candidate_models():
+        for thinking in (True, False):
+            try:
+                resp = _client().models.generate_content(model=model, contents=prompt,
+                                                         config=_config(None, max_tokens, 0.0, thinking))
+                if resp.text:
+                    _active["model"] = model
+                    return resp.text
+                break
+            except errors.APIError as exc:
+                next_model, without_thinking = _retryable(exc)
+                last_error = exc
+                if without_thinking and thinking:
+                    continue
+                if next_model:
+                    break
+                raise
+    raise last_error or RuntimeError("No Gemini model is available")
+
+
 def _contents(history: list[dict], final_user_text: str) -> list[dict]:
     contents = []
     for m in history:
@@ -52,19 +159,8 @@ def _contents(history: list[dict], final_user_text: str) -> list[dict]:
     return contents
 
 
-def stream_gemini(history: list[dict], prompt: str):
-    """Yield answer text chunks from Gemini."""
-    from google.genai import types
-
-    stream = _client().models.generate_content_stream(
-        model=gemini_model(),
-        contents=_contents(history, prompt),
-        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, temperature=0.3,
-                                           max_output_tokens=4096),
-    )
-    for chunk in stream:
-        if chunk.text:
-            yield chunk.text
+def is_arabic(text: str) -> bool:
+    return bool(re.search(r"[؀-ۿ]", text))
 
 
 def search_query(question: str, alert: dict | None) -> str:
@@ -72,18 +168,11 @@ def search_query(question: str, alert: dict | None) -> str:
     extra = ""
     if alert:
         extra = f" {alert['pred_label']} {kb.family_of(alert['pred_label'])}"
-    if re.search(r"[؀-ۿ]", question) and llm_available():
+    if is_arabic(question) and llm_available():
         try:
-            from google.genai import types
-
-            resp = _client().models.generate_content(
-                model=gemini_model(),
-                contents=f"Rewrite this question as a short English search query about network security. "
-                         f"Return only the query.\n\nQuestion: {question}",
-                config=types.GenerateContentConfig(temperature=0, max_output_tokens=60),
-            )
-            if resp.text:
-                return resp.text.strip() + extra
+            query = generate_gemini("Rewrite this question as a short English search query. "
+                                    f"Return only the query.\n\nQuestion: {question}")
+            return query.strip() + extra
         except Exception:
             pass
     return question + extra
@@ -131,25 +220,40 @@ _WHAT = re.compile(r"what is|what's|explain|describe|tell me about|ايه هو|�
 def offline_answer(question: str, alert: dict | None, hits: list) -> str:
     """Answer without a language model, from the alert context and the retrieved passages."""
     parts = []
+    ar = is_arabic(question)
     label = alert["pred_label"] if alert else None
     a = kb.info(label) if label else None
 
     if alert and _WHY.search(question):
-        verdict = "an **attack**" if alert["is_attack"] else "**benign** traffic"
-        parts.append(f"The binary model classified this flow as {verdict} with an attack probability of "
-                     f"**{alert['attack_prob']:.2%}**.")
-        if alert["is_attack"]:
-            parts.append(f"The specialist model identified it as **{a['name']}** ({a['family']}, severity {alert['severity']}).")
+        if ar:
+            verdict = "**هجوم**" if alert["is_attack"] else "traffic **طبيعي**"
+            parts.append(f"الـ binary model صنّف الـ flow ده على إنه {verdict}، واحتمال الهجوم **{alert['attack_prob']:.2%}**.")
+            if alert["is_attack"]:
+                parts.append(f"والـ specialist model حدد نوعه: **{a['name']}** ({a['family']}، severity {alert['severity']}).")
+        else:
+            verdict = "an **attack**" if alert["is_attack"] else "**benign** traffic"
+            parts.append(f"The binary model classified this flow as {verdict} with an attack probability of "
+                         f"**{alert['attack_prob']:.2%}**.")
+            if alert["is_attack"]:
+                parts.append(f"The specialist model identified it as **{a['name']}** ({a['family']}, severity {alert['severity']}).")
         if alert.get("explanation"):
-            parts.append("The features that pushed the decision the most:")
+            parts.append("أكتر الـ features اللي أثرت على القرار:" if ar else "The features that pushed the decision the most:")
             for f in alert["explanation"][:5]:
-                direction = "towards attack" if f["contribution"] > 0 else "towards benign"
-                bm = f" (normal traffic median: {f['benign_median']:.4g})" if f.get("benign_median") is not None else ""
-                parts.append(f"- `{f['feature']}` = {f['value']:.4g}{bm}: pushed {direction}")
+                bm_value = f.get("benign_median")
+                if ar:
+                    direction = "ناحية الهجوم" if f["contribution"] > 0 else "ناحية الطبيعي"
+                    bm = f" (الـ median في الـ traffic الطبيعي: {bm_value:.4g})" if bm_value is not None else ""
+                    parts.append(f"- `{f['feature']}` = {f['value']:.4g}{bm}: زقّت القرار {direction}")
+                else:
+                    direction = "towards attack" if f["contribution"] > 0 else "towards benign"
+                    bm = f" (normal traffic median: {bm_value:.4g})" if bm_value is not None else ""
+                    parts.append(f"- `{f['feature']}` = {f['value']:.4g}{bm}: pushed {direction}")
         if a and a["indicators"]:
-            parts.append("This matches what we know about this traffic type:\n" + "\n".join(f"- {i}" for i in a["indicators"]))
+            head = "وده متوافق مع اللي نعرفه عن النوع ده:" if ar else "This matches what we know about this traffic type:"
+            parts.append(head + "\n" + "\n".join(f"- {i}" for i in a["indicators"]))
     elif alert and alert["is_attack"] and _RESPOND.search(question):
-        parts.append(f"**Response playbook for {a['name']}** (severity {alert['severity']}):")
+        parts.append(f"**خطوات التعامل مع {a['name']}** (severity {alert['severity']}):" if ar
+                     else f"**Response playbook for {a['name']}** (severity {alert['severity']}):")
         parts += [f"{i}. {s}" for i, s in enumerate(a["response"], 1)]
         if a["prevention"]:
             parts.append("**Prevention:**\n" + "\n".join(f"- {p}" for p in a["prevention"]))
@@ -159,11 +263,14 @@ def offline_answer(question: str, alert: dict | None, hits: list) -> str:
     if hits and not parts:
         best = rag.best_sentences(question, hits, n=3)
         if best:
-            parts.append("From the knowledge base:")
+            parts.append("من الـ knowledge base:" if ar else "From the knowledge base:")
             for i, sentence in best:
                 parts.append(f"- {sentence} [S{i}]")
     if not parts:
-        parts.append("I could not find an answer to that in the knowledge base. Try asking about the selected alert "
+        parts.append("ملقيتش إجابة للسؤال ده في الـ knowledge base. جرّب تسأل عن الـ alert المختار (ليه اتعلم عليه، "
+                     "وإزاي نتعامل معاه)، أو عن نوع هجوم، أو عن داتا CICIDS2017." if ar else
+                     "I could not find an answer to that in the knowledge base. Try asking about the selected alert "
                      "(why it was flagged, how to respond), an attack type, or the CICIDS2017 dataset.")
-    parts.append("\n_Offline mode: answer built from the knowledge base. Add a Gemini API key for full conversational answers._")
+    parts.append("\n_Offline mode: الإجابة دي من الـ knowledge base بس، لأن Gemini مش متاح دلوقتي._" if ar else
+                 "\n_Offline mode: answer built from the knowledge base only, because Gemini is not available right now._")
     return "\n\n".join(parts)

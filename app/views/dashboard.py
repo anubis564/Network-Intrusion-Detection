@@ -14,7 +14,7 @@ engine, res = state.results()
 top_l, top_r = st.columns([3, 2], vertical_alignment="bottom")
 with top_l:
     ui.page_header("Network Intrusion Detection System",
-                   "Flows from the improved CICIDS2017 capture (3-7 July 2017), scored by the detection models")
+                   "Held-out test flows from the improved CICIDS2017 capture (3-7 July 2017): traffic the detection model never saw in training")
 days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 res["day"] = pd.to_datetime(res["Timestamp"]).dt.day_name()
 with top_r:
@@ -50,7 +50,7 @@ correct = (view["is_attack"] == view["true_attack"]).mean() if len(view) else 0
 sources = alerts.groupby("bucket")["Src IP"].nunique().reindex(per_bucket.index, fill_value=0)
 ui.kpi_row([
     ui.kpi_card("Flows analysed", ui.fmt_int(len(view)), COLORS["blue"], per_bucket["flows"].values,
-                f"{len(view) / max(len(res), 1):.0%}", "of the demo capture"),
+                f"{len(view) / max(len(res), 1):.0%}", "of the test traffic"),
     ui.kpi_card("Total alerts", ui.fmt_int(len(alerts)), COLORS["red"], per_bucket["alerts"].values,
                 f"{len(alerts) / max(len(view), 1):.1%}", "of analysed flows"),
     ui.kpi_card("Critical alerts", ui.fmt_int((alerts["severity"] == "Critical").sum()), COLORS["orange"],

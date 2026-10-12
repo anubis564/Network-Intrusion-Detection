@@ -6,6 +6,7 @@ Two modes:
            the interface still works, and shows a banner explaining why.
 """
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -16,12 +17,15 @@ import polars.selectors as cs
 import streamlit as st
 
 from core import knowledge as kb
-from core.config import DEMO_DATA, IDENTIFIER_COLUMNS, MODELS_DIR, ROOT
+from core.config import TRAFFIC_DATA, IDENTIFIER_COLUMNS, MODELS_DIR, ROOT
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 ATTACK_THRESHOLD = 0.5
+# Streamlit runs every session and every fragment rerun in its own thread. The models (XGBoost with OpenMP,
+# scikit-learn with joblib) are shared through st.cache_resource, so all calls into them go through one lock.
+_MODEL_LOCK = threading.RLock()
 SUSPICIOUS_THRESHOLD = 0.2
 
 
@@ -67,9 +71,18 @@ def load_engine() -> Engine:
                   specialist_classes=art["specialist_classes"], metadata=art["metadata"], input_columns=columns)
 
 
-@st.cache_data(show_spinner=False)
-def load_demo() -> pl.DataFrame:
-    return pl.read_parquet(DEMO_DATA)
+def take_rows(df: pl.DataFrame, idx) -> pl.DataFrame:
+    """Rows of a polars frame by position.
+
+    Indexing a polars frame with a numpy array (df[np_array]) crashed the whole server with an access
+    violation when it ran inside Streamlit's script threads, so positions are passed as a plain list.
+    """
+    return df[pl.Series("idx", [int(i) for i in idx], dtype=pl.Int64)]
+
+
+@st.cache_resource(show_spinner=False)  # one shared read-only copy; cache_data would copy it on every rerun
+def load_traffic() -> pl.DataFrame:
+    return pl.read_parquet(TRAFFIC_DATA)
 
 
 def read_uploaded_csv(file) -> pl.DataFrame:
@@ -127,8 +140,9 @@ def score(engine: Engine, df: pl.DataFrame) -> pd.DataFrame:
     out["valid"] = valid
     idx = np.flatnonzero(valid)
     if len(idx):
-        Xv = X[idx]
-        proba = engine.binary.predict_proba(Xv)
+        Xv = take_rows(X, idx)
+        with _MODEL_LOCK:
+            proba = engine.binary.predict_proba(Xv)
         pos = list(getattr(engine.binary, "classes_", [0, 1])).index(1)
         out.loc[idx, "attack_prob"] = proba[:, pos]
         out.loc[idx, "pred_conf"] = np.maximum(proba[:, pos], 1 - proba[:, pos])
@@ -136,7 +150,8 @@ def score(engine: Engine, df: pl.DataFrame) -> pd.DataFrame:
         out.loc[atk_idx, "is_attack"] = True
         if len(atk_idx):
             if engine.specialist is not None:
-                sp = engine.specialist.predict_proba(X[atk_idx])
+                with _MODEL_LOCK:
+                    sp = engine.specialist.predict_proba(take_rows(X, atk_idx))
                 best = sp.argmax(axis=1)
                 out.loc[atk_idx, "pred_label"] = [_class_name(engine, engine.specialist.classes_[b]) for b in best]
                 out.loc[atk_idx, "pred_conf"] = sp.max(axis=1)
@@ -155,14 +170,15 @@ def specialist_top(engine: Engine, df_row: pl.DataFrame, k: int = 3) -> list[tup
     if engine.mode != "model" or engine.specialist is None:
         return []
     X, _ = _feature_frame(df_row, engine.input_columns)
-    p = engine.specialist.predict_proba(X)[0]
+    with _MODEL_LOCK:
+        p = engine.specialist.predict_proba(X)[0]
     order = np.argsort(p)[::-1][:k]
     return [(_class_name(engine, engine.specialist.classes_[i]), float(p[i])) for i in order]
 
 
-@st.cache_data(show_spinner="Scoring demo traffic...")
-def score_demo(_engine: Engine, cache_key: str) -> pd.DataFrame:
-    demo = load_demo()
+@st.cache_data(show_spinner="Scoring test traffic...")
+def score_traffic(_engine: Engine, cache_key: str) -> pd.DataFrame:
+    demo = load_traffic()
     t0 = time.perf_counter()
     res = score(_engine, demo)
     elapsed = time.perf_counter() - t0
@@ -196,7 +212,8 @@ def explain(engine: Engine, df_row: pl.DataFrame, use_specialist: bool = False, 
         return None, "Model not available."
     X, _ = _feature_frame(df_row, engine.input_columns)
     if hasattr(model, "steps"):
-        Xt, est = model[:-1].transform(X), model[-1]
+        with _MODEL_LOCK:
+            Xt, est = model[:-1].transform(X), model[-1]
     else:
         Xt, est = X.to_pandas(), model
     Xt = pd.DataFrame(Xt)
@@ -205,7 +222,8 @@ def explain(engine: Engine, df_row: pl.DataFrame, use_specialist: bool = False, 
     if type(est).__name__.startswith("XGB"):
         import xgboost as xgb
 
-        contribs = est.get_booster().predict(xgb.DMatrix(Xt), pred_contribs=True)
+        with _MODEL_LOCK:
+            contribs = est.get_booster().predict(xgb.DMatrix(Xt), pred_contribs=True)
         if contribs.ndim == 3:  # multi-class: (rows, classes, features + bias)
             classes = [_class_name(engine, c) for c in est.classes_]
             ci = classes.index(class_name) if class_name in classes else int(np.argmax(contribs[0, :, :].sum(axis=1)))
@@ -229,7 +247,7 @@ def explain(engine: Engine, df_row: pl.DataFrame, use_specialist: bool = False, 
 # ----------------------------------------------------------------------------------- baseline stats
 @st.cache_data(show_spinner=False)
 def benign_baseline() -> dict:
-    demo = load_demo()
+    demo = load_traffic()
     benign = demo.filter(pl.col("Label") == "BENIGN").select(cs.numeric().exclude("Src Port", "Dst Port"))
     return {c: np.sort(benign[c].cast(pl.Float64).to_numpy()) for c in benign.columns}
 

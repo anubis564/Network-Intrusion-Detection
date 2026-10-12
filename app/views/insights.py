@@ -43,7 +43,7 @@ with tab_models:
         if v:
             st.caption("Trained with " + ", ".join(f"{k} {val}" for k, val in v.items()) + f" on {meta.get('saved_on', '?')}")
     with right, st.container(border=True):
-        st.markdown("**Demo traffic: predicted type vs dataset label**")
+        st.markdown("**Test traffic: predicted type vs dataset label**")
         labels = sorted(set(res["true_label"]) | set(res["pred_label"]))
         cm = pd.crosstab(res["true_label"], res["pred_label"]).reindex(index=labels, columns=labels, fill_value=0)
         z = cm.div(cm.sum(axis=1).replace(0, 1), axis=0)
@@ -53,7 +53,7 @@ with tab_models:
         fig.update_xaxes(title="Predicted", tickangle=40)
         fig.update_yaxes(title="Dataset label", autorange="reversed")
         st.plotly_chart(ui.plotly_layout(fig, 520, legend=False), width="stretch")
-        st.caption("The demo flows were sampled from the full dataset, so some of them were also seen in training.")
+        st.caption("These are the notebook's held-out test flows (all attacks, 35% of benign): the binary model never saw them. The attack-type model was trained on its own split of the attack flows, so some of these attacks were in its training data.")
 
 with tab_data:
     findings = [
@@ -70,7 +70,7 @@ with tab_data:
             st.markdown(f"<div style='font-size:1.5rem;font-weight:800;color:{COLORS['blue']}'>{big}</div>"
                         f"<div style='color:#cbd5e1'>{text}</div>", unsafe_allow_html=True)
     with st.container(border=True):
-        st.markdown("**Demo traffic composition**")
+        st.markdown("**Test traffic composition**")
         comp = res["true_label"].value_counts().rename_axis("Label").reset_index(name="Flows")
         st.dataframe(comp, hide_index=True, width="stretch")
 

@@ -8,12 +8,12 @@ security dashboard and an AI assistant that explains every alert.
 | Page | What you can do |
 |---|---|
 | **Dashboard** | SOC-style overview: flows analysed, alerts, critical alerts, attacking sources, traffic over time (normal / suspicious / malicious), top attack types, recent alerts with severity and simulated response, system status, HTML report export. |
-| **Live Monitor** | Replays the capture in time order through the models as if traffic were arriving now, with a live alert feed, critical-alert notifications and a "jump to attack" control. |
+| **Live Monitor** | Replays the held-out test flows on their real capture timeline (1x to 900x speed) and scores them with the models as they arrive: live alert feed, critical-alert notifications, "jump to next attack" and "go to day" controls. |
 | **Alert Investigation** | Verdict, severity and MITRE ATT&CK mapping for one flow; **why the model decided** (TreeSHAP contributions from XGBoost); comparison with normal traffic; attack-type probabilities; response playbook with progress tracking; suggested firewall rule; analyst feedback; incident report download; a what-if lab to change features and re-score. |
 | **AI Assistant** | Chat about the selected alert, attacks, response steps or the dataset, in Arabic or English. Retrieval-augmented: answers cite the passages they use. Uses **Gemini** when an API key is configured, and answers from the knowledge base otherwise. |
 | **Batch Scan** | Upload a CICFlowMeter CSV, score every flow, download the results. |
 | **Attack Library** | Every attack type: how it works, how it shows up in the flows (from our EDA), impact, response and prevention. |
-| **Model & Data** | Test metrics, pipeline, confusion matrix on the demo traffic, key dataset findings, and the **RAG evaluation** on the team's 50-question bank (hit rate 98% at TOP_K = 3). |
+| **Model & Data** | Test metrics, pipeline, confusion matrix on the held-out test traffic, key dataset findings, and the **RAG evaluation** on the team's 50-question bank (hit rate 98% at TOP_K = 3). |
 
 ## Repository layout
 
@@ -23,13 +23,13 @@ app/
   views/                 one file per page
   core/                  engine (models, scoring, explanations), RAG, assistant, knowledge base, UI helpers
   knowledge/             documents indexed by the assistant (dataset notes, question bank, project notes)
-  data/demo_flows.parquet  18,928 real flows sampled from the dataset (with IPs/timestamps) for the demo
+  data/test_flows.parquet  155,608 held-out test flows (with IPs/timestamps) that the app replays
 src/
   preprocessing.py       cleaning + feature-selection classes and make_model()  (used by notebook AND app)
   artifacts.py           save_artifacts() / load_artifacts(): the model format the app expects
 models/                  xgb_binary_model.pkl, specialist_model.pkl, model_metadata.json
 notebooks/cicids2017.ipynb  analysis, EDA and model training
-scripts/build_demo_data.py  rebuilds app/data/demo_flows.parquet from the raw CSVs
+scripts/build_test_replay.py  rebuilds app/data/test_flows.parquet from the raw CSVs
 ```
 
 ## Run locally
@@ -43,6 +43,22 @@ streamlit run app/app.py
 
 For the AI assistant, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and add a Gemini API key
 (free key: https://aistudio.google.com/apikey). Without a key the assistant runs in offline mode.
+
+## Simulated live traffic
+
+The app replays the notebook's **held-out test set**, so every flow it shows is one the binary model never saw
+in training. `scripts/build_test_replay.py` repeats the notebook's cleaning and its
+`train_test_split(test_size=0.2, random_state=42, stratify=y)`, recovers the same 342,168 test flows (it checks
+this by reproducing the saved attack F1 exactly), joins back their IPs, ports and timestamps, and keeps every
+attack flow plus 35% of the benign ones (155,608 flows, 16 MB). The Live Monitor plays them on the original
+capture clock, so traffic rates, quiet nights and attack bursts happen when they did in July 2017.
+
+```bash
+python scripts/build_test_replay.py data/raw --check-model models
+```
+
+The attack-type (specialist) model was trained on its own split of the attack flows, so some test attacks were in
+its training data; the attack/benign decision is fully out-of-sample.
 
 ## Data
 
@@ -94,7 +110,6 @@ labels) and shows the reason in a banner.
 3. In **Advanced settings** choose **Python 3.13**, and paste the secrets:
    ```toml
    GEMINI_API_KEY = "..."
-   GEMINI_MODEL = "gemini-2.5-flash"
    ```
 
 ## Dataset citation

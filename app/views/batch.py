@@ -18,7 +18,7 @@ state.mode_banner(engine)
 with st.container(border=True):
     up, sample = st.columns([3, 1], vertical_alignment="bottom")
     file = up.file_uploader("CSV file (same columns as the CICIDS2017 day files)", type=["csv"])
-    demo = eng.load_demo()
+    demo = eng.load_traffic()
     sample_csv = demo.sample(300, seed=7).sort("Timestamp").with_columns(
         pl.col("Timestamp").dt.strftime("%d/%m/%Y %I:%M:%S %p")).write_csv()
     sample.download_button("Sample CSV (300 flows)", sample_csv, file_name="sample_flows.csv",

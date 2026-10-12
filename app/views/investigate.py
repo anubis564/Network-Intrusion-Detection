@@ -18,7 +18,7 @@ state.mode_banner(engine)
 # ---------------------------------------------------------------------------- pick a flow
 idx = state.selected_alert_idx(res)
 c1, c2, c3 = st.columns([4, 2, 1], vertical_alignment="bottom")
-alert_ids = list(res.index[res["is_attack"]][::-1])
+alert_ids = list(res.index[res["is_attack"]][::-1][:500])  # most recent 500 alerts
 if idx not in alert_ids:
     alert_ids = [idx] + alert_ids
 choice = c1.selectbox("Alert", alert_ids, index=alert_ids.index(idx), format_func=lambda i: state.alert_label(res, i))
