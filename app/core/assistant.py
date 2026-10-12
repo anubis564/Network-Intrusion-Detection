@@ -1,6 +1,7 @@
 """AI assistant: retrieval + Gemini, with an offline fallback that answers from the knowledge base."""
 import functools
 import re
+import time
 
 from core import knowledge as kb
 from core import rag
@@ -20,9 +21,16 @@ How to answer:
 
 # Tried in order when GEMINI_MODEL is not set or fails. The models a key can use change over time
 # (older ones are retired, popular ones return 503 under load), so the app never depends on a single name.
-FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash",
+                   "gemini-3.5-flash-lite", "gemini-flash-latest"]
 _RETRY_CODES = {404, 408, 429, 500, 502, 503, 504}
+# How long a model is skipped after it fails: out of quota (429) for a while, overloaded (503) briefly,
+# retired (404) for the rest of the session. Without this every question waited on the same failing model.
+_COOLDOWN_SECONDS = {429: 600, 404: 86400}
+_DEFAULT_COOLDOWN = 60
+_cooldown: dict[str, float] = {}
 _active = {"model": None}
+REQUEST_TIMEOUT_MS = 15_000
 
 
 # ------------------------------------------------------------------------------------- Gemini
@@ -42,7 +50,12 @@ def _client():
 @functools.lru_cache(maxsize=2)
 def _client_for(api_key: str):
     from google import genai
-    return genai.Client(api_key=api_key)
+    from google.genai import types
+
+    # The SDK retries a busy model up to 5 times with growing waits (about 15 s in total) before giving up.
+    # Fail fast instead and let the app move on to the next model.
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(
+        timeout=REQUEST_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
 @functools.lru_cache(maxsize=2)
@@ -53,17 +66,21 @@ def _candidates_for(api_key: str, configured: str) -> tuple:
         found = []
         for m in _client_for(api_key).models.list():
             name = m.name.removeprefix("models/")
-            match = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash", name)
+            match = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash(-lite)?", name)
             if match and "generateContent" in (m.supported_actions or []):
-                found.append((float(match.group(1)), name))
-        names += [n for _, n in sorted(found, reverse=True)[:4]]
+                found.append((bool(match.group(2)), -float(match.group(1)), name))
+        flash = [n for lite, _, n in sorted(found) if not lite][:4]
+        lite = [n for is_lite, _, n in sorted(found) if is_lite][:2]  # faster, used when the full models are busy
+        names += flash + lite
     except Exception:
         pass
     return tuple(dict.fromkeys(names + FALLBACK_MODELS))
 
 
 def candidate_models() -> list[str]:
-    models = list(_candidates_for(gemini_key(), secret("GEMINI_MODEL") or ""))
+    now = time.time()
+    all_models = list(_candidates_for(gemini_key(), secret("GEMINI_MODEL") or ""))
+    models = [m for m in all_models if _cooldown.get(m, 0) <= now] or all_models
     if _active["model"] in models:  # the model that answered last time goes first
         models.remove(_active["model"])
         models.insert(0, _active["model"])
@@ -92,6 +109,11 @@ def _reasons(tried) -> list[str]:
         status = getattr(err, "status", None)
         out.append(f"{model}: {code} {status}" if code else f"{model}: {err}")
     return out
+
+
+def _mark_failed(model: str, exc) -> None:
+    code = getattr(exc, "code", None)
+    _cooldown[model] = time.time() + _COOLDOWN_SECONDS.get(code, _DEFAULT_COOLDOWN)
 
 
 def _retryable(exc) -> tuple[bool, bool]:
@@ -128,11 +150,20 @@ def stream_gemini(history: list[dict], prompt: str):
                 next_model, without_thinking = _retryable(exc)
                 last_error = exc
                 tried.append((model, exc))
+                if next_model:
+                    _mark_failed(model, exc)
                 if without_thinking and thinking:
                     continue
                 if next_model:
                     break
                 raise
+            except Exception as exc:  # network errors and read timeouts are not APIError: try the next model too
+                if got_text:
+                    raise
+                last_error = exc
+                tried.append((model, exc))
+                _mark_failed(model, exc)
+                break
     raise RuntimeError("no Gemini model answered: " + "; ".join(_reasons(tried)))
 
 
@@ -154,11 +185,18 @@ def generate_gemini(prompt: str, max_tokens: int = 1024) -> str:
                 next_model, without_thinking = _retryable(exc)
                 last_error = exc
                 tried.append((model, exc))
+                if next_model:
+                    _mark_failed(model, exc)
                 if without_thinking and thinking:
                     continue
                 if next_model:
                     break
                 raise
+            except Exception as exc:
+                last_error = exc
+                tried.append((model, exc))
+                _mark_failed(model, exc)
+                break
     raise RuntimeError("no Gemini model answered: " + "; ".join(_reasons(tried)))
 
 
@@ -175,18 +213,33 @@ def is_arabic(text: str) -> bool:
     return bool(re.search(r"[؀-ۿ]", text))
 
 
+# Arabic words that matter for retrieval, mapped to the English terms used in the knowledge base.
+# Translating locally saves a full Gemini round trip on every Arabic question.
+_AR_TERMS = {
+    "هجوم": "attack", "هجمات": "attacks", "اختراق": "intrusion infiltration", "ثغرة": "vulnerability exploit",
+    "حجب": "denial of service DoS", "اغراق": "flood", "إغراق": "flood", "فحص": "scan PortScan",
+    "منافذ": "ports PortScan", "بورت": "port", "كلمة السر": "password brute force", "كلمات السر": "password brute force",
+    "تخمين": "brute force guessing", "بوت": "Bot botnet", "شبكة": "network", "سيرفر": "server", "خادم": "server",
+    "داتا": "dataset data", "بيانات": "dataset data", "عدد": "how many count flows", "كام": "how many count",
+    "موديل": "model", "نموذج": "model", "تدريب": "training", "دقة": "accuracy F1",
+    "اتعامل": "respond response mitigation", "أتعامل": "respond response mitigation", "حماية": "prevention protection",
+    "امنع": "prevent prevention", "أمنع": "prevent prevention", "خطوات": "response steps", "حل": "response mitigation",
+    "ليه": "why prediction features", "لماذا": "why prediction features", "سبب": "reason why features",
+    "يعني ايه": "what is definition", "يعني إيه": "what is definition", "ايه هو": "what is", "إيه هو": "what is",
+    "محاولة": "attempted", "محاولات": "attempted", "تنظيف": "cleaning preprocessing", "خصائص": "features",
+    "استرجاع": "retrieval RAG", "مصادر": "sources citations", "حقن": "injection SQL", "سكريبت": "script XSS",
+}
+
+
 def search_query(question: str, alert: dict | None) -> str:
-    """English query for the retriever. Arabic questions are translated by Gemini when it is available."""
+    """English query for the retriever: Arabic keywords are mapped to English terms locally (no extra API call)."""
     extra = ""
     if alert:
         extra = f" {alert['pred_label']} {kb.family_of(alert['pred_label'])}"
-    if is_arabic(question) and llm_available():
-        try:
-            query = generate_gemini("Rewrite this question as a short English search query. "
-                                    f"Return only the query.\n\nQuestion: {question}")
-            return query.strip() + extra
-        except Exception:
-            pass
+    if is_arabic(question):
+        terms = [en for ar, en in _AR_TERMS.items() if ar in question]
+        latin = " ".join(re.findall(r"[A-Za-z][A-Za-z0-9\-/]*", question))  # English words kept as written
+        return f"{latin} {' '.join(terms)}".strip() + extra
     return question + extra
 
 
@@ -220,7 +273,11 @@ def build_prompt(question: str, alert: dict | None, hits: list) -> str:
     sources = "\n\n".join(f"[S{i}] ({c.source} > {c.title})\n{c.text}" for i, (c, _) in enumerate(hits, 1))
     return (f"ALERT CONTEXT\n{alert_context(alert)}\n\n"
             f"SOURCES\n{sources or 'No relevant sources were retrieved.'}\n\n"
-            f"QUESTION\n{question}")
+            f"QUESTION\n{question}\n\n"
+            # the language rule is repeated next to the question: the faster lite models follow it more reliably
+            # here than in the system instruction, especially when every source passage is in English
+            + ("ANSWER LANGUAGE: Arabic (Egyptian dialect if the question is Egyptian). Keep technical terms in English."
+               if is_arabic(question) else "ANSWER LANGUAGE: English."))
 
 
 # ------------------------------------------------------------------------------- offline answers

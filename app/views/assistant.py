@@ -95,10 +95,20 @@ if prompt:
         with st.chat_message("assistant", avatar=":material/shield:"):
             answer, notice = None, None
             if ai.llm_available():
+                waiting = st.empty()
+                waiting.markdown(":gray[_جاري التفكير…_]" if ai.is_arabic(prompt) else ":gray[_Thinking…_]")
+
+                def chunks():
+                    for i, text in enumerate(ai.stream_gemini(history[-8:], ai.build_prompt(prompt, alert, hits))):
+                        if i == 0:
+                            waiting.empty()  # the first words replace the "thinking" note
+                        yield text
+
                 try:
-                    answer = st.write_stream(ai.stream_gemini(history[-8:], ai.build_prompt(prompt, alert, hits)))
+                    answer = st.write_stream(chunks())
                 except Exception as exc:
                     notice = f"Gemini did not answer, so this reply comes from the knowledge base only. Reason: {exc}"
+                waiting.empty()
             else:
                 notice = f"No GEMINI_API_KEY found (looked in Streamlit secrets and {SECRETS_FILE})."
             if not answer:
