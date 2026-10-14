@@ -3,6 +3,14 @@
 A machine-learning intrusion detection system built on the **improved CICIDS2017** dataset, with a Streamlit
 security dashboard and an AI assistant that explains every alert.
 
+**Live app: [https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/)**
+
+Pages: [Dashboard](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/) · [Live Monitor](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/live) · [Alert Investigation](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/investigate) ·
+[AI Assistant](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/assistant) · [Batch Scan](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/batch) · [Attack Library](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/library) · [Model & Data](https://network-intrusion-detection-ftv43ehcwpru6otrwnywuv.streamlit.app/insights)
+
+The free Streamlit Community Cloud plan puts the app to sleep after a period without visitors. If you see
+"This app has gone to sleep", press **Yes, get this app back up!** and give it a minute or two to start.
+
 ## What the app does
 
 | Page | What you can do |
